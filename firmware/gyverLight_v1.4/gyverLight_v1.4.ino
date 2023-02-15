@@ -21,19 +21,26 @@
 */
 
 // ************************** НАСТРОЙКИ ***********************
-#define CURRENT_LIMIT 2000  // лимит по току в миллиамперах, автоматически управляет яркостью (пожалей свой блок питания!) 0 - выключить лимит
-#define AUTOPLAY_TIME 30    // время между сменой режимов в секундах
+#define CURRENT_LIMIT 0     // лимит по току в миллиамперах, автоматически управляет яркостью (пожалей свой блок питания!) 0 - выключить лимит
+#define AUTOPLAY_TIME 60    // время между сменой режимов в секундах
 
-#define NUM_LEDS 14         // количсетво светодиодов в одном отрезке ленты
-#define NUM_STRIPS 4        // количество отрезков ленты (в параллели)
+#define NUM_LEDS 30         // количсетво светодиодов в одном отрезке ленты
+#define NUM_STRIPS 1        // количество отрезков ленты (в параллели)
 #define LED_PIN 6           // пин ленты
 #define BTN_PIN 2           // пин кнопки/сенсора
-#define MIN_BRIGHTNESS 5  // минимальная яркость при ручной настройке
+#define MIN_BRIGHTNESS 25   // минимальная яркость при ручной настройке
 #define BRIGHTNESS 250      // начальная яркость
 #define FIRE_PALETTE 0      // разные типы огня (0 - 3). Попробуй их все! =)
 
 // ************************** ДЛЯ РАЗРАБОТЧИКОВ ***********************
-#define MODES_AMOUNT 6
+#define MODES_AMOUNT 5
+#define WIDTH 6              // ширина матрицы
+#define HEIGHT 5             // высота матрицы
+
+#define COLOR_ORDER RGB       // порядок цветов на ленте. Если цвет отображается некорректно - меняйте. Начать можно с RGB
+
+#define SEGMENTS 1
+#define MATRIX_TYPE 1 
 
 #include "GyverButton.h"
 GButton touch(BTN_PIN, LOW_PULL, NORM_OPEN);
@@ -53,13 +60,18 @@ byte thisMode;
 
 bool gReverseDirection = false;
 boolean loadingFlag = true;
-boolean autoplay = true;
+boolean autoplay = false;
 boolean powerDirection = true;
-boolean powerActive = false;
 boolean powerState = true;
 boolean whiteMode = false;
 boolean brightDirection = true;
 boolean wasStep = false;
+unsigned char matrixValue[8][16];
+struct {
+  byte brightness = 50;
+  byte speed = 50;
+  byte scale = 0;
+} modes[MODES_AMOUNT];
 
 
 // залить все
@@ -75,7 +87,6 @@ uint32_t getPixColor(int thisPixel) {
 }
 
 void setup() {
-  Serial.begin(9600);
   FastLED.addLeds<WS2811, LED_PIN, GRB>(leds, NUM_LEDS).setCorrection( TypicalLEDStrip );
   if (CURRENT_LIMIT > 0) FastLED.setMaxPowerInVoltsAndMilliamps(5, CURRENT_LIMIT / NUM_STRIPS);
   FastLED.setBrightness(brightness);
@@ -85,7 +96,7 @@ void setup() {
   touch.setTimeout(300);
   touch.setStepTimeout(50);
 
-  if (FIRE_PALETTE == 0) gPal = HeatColors_p;
+  if (FIRE_PALETTE == 0) gPal = RainbowColors_p;
   else if (FIRE_PALETTE == 1) gPal = CRGBPalette16( CRGB::Black, CRGB::Red, CRGB::Yellow, CRGB::White);
   else if (FIRE_PALETTE == 2) gPal = CRGBPalette16( CRGB::Black, CRGB::Blue, CRGB::Aqua,  CRGB::White);
   else if (FIRE_PALETTE == 3) gPal = CRGBPalette16( CRGB::Black, CRGB::Red, CRGB::White);
@@ -97,15 +108,14 @@ void loop() {
     byte clicks = touch.getClicks();
     switch (clicks) {
       case 1:
-        powerDirection = !powerDirection;
-        powerActive = true;
-        tempBrightness = brightness * !powerDirection;
-        break;
-      case 2: if (!whiteMode && !powerActive) {
+        if (!whiteMode) {
           nextMode();
+        } else {
+            effectTimer.start();
+            whiteMode = !whiteMode;
         }
         break;
-      case 3: if (!powerActive) {
+      case 2: 
           whiteMode = !whiteMode;
           if (whiteMode) {
             effectTimer.stop();
@@ -114,9 +124,9 @@ void loop() {
           } else {
             effectTimer.start();
           }
-        }
         break;
-      case 4: if (!whiteMode && !powerActive) autoplay = !autoplay;
+      case 3: 
+        autoplay = !autoplay;
         break;
       default:
         break;
@@ -124,17 +134,15 @@ void loop() {
   }
 
   if (touch.isStep()) {
-    if (!powerActive) {
-      wasStep = true;
-      if (brightDirection) {
-        brightness += 5;
-      } else {
-        brightness -= 5;
-      }
-      brightness = constrain(brightness, MIN_BRIGHTNESS, 255);
-      FastLED.setBrightness(brightness);
-      FastLED.show();
+    wasStep = true;
+    if (brightDirection) {
+      brightness += 5;
+    } else {
+      brightness -= 5;
     }
+    brightness = constrain(brightness, MIN_BRIGHTNESS, 255);
+    FastLED.setBrightness(brightness);
+    FastLED.show();
   }
 
   if (touch.isRelease()) {
@@ -146,7 +154,7 @@ void loop() {
 
   if (effectTimer.isReady() && powerState) {
     switch (thisMode) {
-      case 0: lighter();
+      case 0: fireRoutine();
         break;
       case 1: lightBugs();
         break;
@@ -156,9 +164,7 @@ void loop() {
         break;
       case 4: sparkles();
         break;
-      case 5: fire();
-        break;
-      case 6: vinigret();
+      case 5: lighter();
         break;
     }
     FastLED.show();
@@ -179,14 +185,12 @@ void nextMode() {
 }
 
 void brightnessTick() {
-  if (powerActive) {
-    if (brightTimer.isReady()) {
+  if (brightTimer.isReady()) {
       if (powerDirection) {
         powerState = true;
         tempBrightness += 10;
         if (tempBrightness > brightness) {
           tempBrightness = brightness;
-          powerActive = false;
         }
         FastLED.setBrightness(tempBrightness);
         FastLED.show();
@@ -194,12 +198,10 @@ void brightnessTick() {
         tempBrightness -= 10;
         if (tempBrightness < 0) {
           tempBrightness = 0;
-          powerActive = false;
           powerState = false;
         }
         FastLED.setBrightness(tempBrightness);
         FastLED.show();
       }
     }
-  }
 }
